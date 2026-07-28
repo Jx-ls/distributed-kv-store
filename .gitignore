@@ -1,0 +1,8 @@
+# binaries
+/bin
+
+#build
+/build
+
+# vscode
+.vscode
