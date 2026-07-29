@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+#include <fstream>
 #include <string>
 #include <vector>
 using namespace std;
@@ -41,3 +43,28 @@ struct AppendEntriesResponse {
 
     int matchIndex;
 };
+
+namespace Serializer {
+    template <typename T>
+    inline void writeVal(ostream& os, const T& val) {
+        os.write(reinterpret_cast<const char*>(&val), sizeof(T));
+    }
+
+    template <typename T>
+    inline bool readVal(istream& is, T& val) {
+        return static_cast<bool>(is.read(reinterpret_cast<char*>(&val), sizeof(T)));
+    }
+
+    inline void writeString(ostream& os, const string& str) {
+        uint32_t len = str.size();
+        writeVal(os, len); // header 4-byte
+        os.write(str.data(), len); // data
+    }
+
+    inline bool readString(istream& is, string& str) {
+        uint32_t len = 0;
+        if (!readVal(is, len)) return false;
+        str.resize(len); // resizes str by reading header
+        return static_cast<bool>(is.read(&str[0], len));
+    }
+}
