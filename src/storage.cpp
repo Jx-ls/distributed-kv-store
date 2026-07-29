@@ -13,3 +13,12 @@ bool Storage::get(const string& key, string& value) {
     value = it -> second;
     return true;
 }
+
+vector<string> Storage::get_all_keys() const {
+    vector<string> keys;
+    keys.reserve(kv.size());
+    for (const auto& [k, v] : kv) {
+        keys.push_back(k);
+    }
+    return keys;
+}
