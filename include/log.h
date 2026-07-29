@@ -18,6 +18,10 @@ public:
     int     lastTerm() const;
     void    snapshot(int snapshotIndex, int snapshotTerm);
 
+    const std::vector<LogEntry>& get_entries() const {
+        return entries;
+    }
+
 private:
     vector<LogEntry> entries;
 };
