@@ -1,6 +1,7 @@
 #pragma once
 
 #include "message.h"
+#include "storage.h"
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -15,7 +16,7 @@ struct SnapshotMeta {
 // Container returned by Wal
 struct RecoveryState {
     SnapshotMeta meta;
-    unordered_map<string, string> kv;
+    Storage storage;
     vector<LogEntry> uncompacted_entries;
 };
 
@@ -25,9 +26,11 @@ private:
     string snap_path;
 
 public:
-    Wal(string path = "./raft_") : wal_path(path + "wal.bin"), snap_path(path + "snap.bin"){}
+    Wal(int id, string dir = "./data/");
 
     void    append(int index, const LogEntry&);
-    void    save_snapshot(const SnapshotMeta& meta, const unordered_map<string, string>& kv, const vector<LogEntry>& remaining_logs);
+    void    save_snapshot(const SnapshotMeta& meta,
+                          Storage& storage, 
+                          const vector<LogEntry>& remaining_logs);
     RecoveryState recover();
 };
