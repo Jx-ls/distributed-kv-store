@@ -67,4 +67,19 @@ namespace Serializer {
         str.resize(len); // resizes str by reading header
         return static_cast<bool>(is.read(&str[0], len));
     }
+
+    /* Log Entry rw */
+    inline void writeLogEntry(ostream& os, int index, const LogEntry& entry) {
+        writeVal(os, index);
+        writeVal(os, entry.term);
+        writeString(os, entry.key);
+        writeString(os, entry.value);
+    }
+
+    inline bool readLogEntry(istream& is, int& index, LogEntry& entry) {
+        if (!readVal(is, index)) return false;
+        if (!readVal(is, entry.term)) return false;
+        if (!readString(is, entry.key)) return false;
+        return readString(is, entry.value);
+    }
 }
