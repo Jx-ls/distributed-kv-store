@@ -4,5 +4,8 @@
 #build
 /build
 
+#data
+/data
+
 # vscode
 .vscode
