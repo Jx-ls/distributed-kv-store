@@ -20,7 +20,7 @@ void Wal::append(int index, const LogEntry& entry) {
     Serializer::writeLogEntry(ofs, index, entry);
 }
 
-void Wal::save_snapshot(const SnapshotMeta& meta, Storage& storage, const vector<LogEntry>& remaining_logs) {
+void Wal::save_snapshot(const SnapshotMeta& meta, Storage& storage) {
     ofstream snap_ofs(snap_path, ios::binary | ios::trunc);
     Serializer::writeVal(snap_ofs, meta.last_included_index);
     Serializer::writeVal(snap_ofs, meta.last_included_term);
@@ -33,12 +33,6 @@ void Wal::save_snapshot(const SnapshotMeta& meta, Storage& storage, const vector
         storage.get(k, v);
         Serializer::writeString(snap_ofs, k);
         Serializer::writeString(snap_ofs, v);
-    }
-
-    ofstream wal_ofs(wal_path, ios::binary | ios::trunc);
-    int current_idx = meta.last_included_index + 1;
-    for (const auto& entry : remaining_logs) {
-        Serializer::writeLogEntry(wal_ofs, current_idx++, entry);
     }
 }
 

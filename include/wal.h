@@ -28,9 +28,7 @@ private:
 public:
     Wal(int id, string dir = "./data/");
 
-    void    append(int index, const LogEntry&);
-    void    save_snapshot(const SnapshotMeta& meta,
-                          Storage& storage, 
-                          const vector<LogEntry>& remaining_logs);
+    void append(int index, const LogEntry&);
+    void save_snapshot(const SnapshotMeta& meta, Storage& storage);
     RecoveryState recover();
 };
