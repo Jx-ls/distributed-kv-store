@@ -1,85 +1,104 @@
 #include <iostream>
-#include <cassert>
-#include <filesystem>
-#include "../include/raft.h" // Includes Storage, Log, WALManager, and Message definitions
+#include <vector>
+#include <string>
+#include <thread>
+#include <chrono>
+#include "../include/raft.h"
+#include "../include/transport.h"
 
-void clean_test_directory() {
-    std::filesystem::remove_all("./data");
+using namespace std;
+
+void print_usage() {
+    cout << "Usage:\n";
+    cout << "  ./kvstore SET <key> <value>\n";
+    cout << "  ./kvstore GET <key>\n";
 }
 
-int main() {
-    clean_test_directory();
-
-    std::cout << " 1. Initializing RaftNode (Node ID: 0)\n";
-
-    int node_id = 0;
-    
-    // Create first node instance
-    {
-        RaftNode node(node_id);
-
-        std::cout << "[Step 1] Appending log entries to WAL and memory...\n";
-        
-        // Append entries
-        LogEntry e1{1, "user:101", "Alice"};
-        LogEntry e2{1, "user:102", "Bob"};
-        LogEntry e3{2, "user:103", "Charlie"};
-
-        node.append_log(e1); // Raft Index 1
-        node.append_log(e2); // Raft Index 2
-        node.append_log(e3); // Raft Index 3
-
-        std::cout << "[Step 2] Applying entries up to Index 2 to Storage...\n";
-        node.apply_to_storage(2); // Commits "user:101" and "user:102"
-
-        // Verify values exist in Storage
-        std::string val1, val2;
-        assert(node.get_storage().get("user:101", val1) && val1 == "Alice");
-        assert(node.get_storage().get("user:102", val2) && val2 == "Bob");
-        std::cout << " -> Storage verified: user:101=" << val1 << ", user:102=" << val2 << "\n";
-
-        std::cout << "[Step 3] Taking Snapshot at Index 2, Term 1...\n";
-        SnapshotMeta meta{2, 1};
-        node.take_snapshot(meta);
-
-        std::cout << "[Step 4] Appending entry past snapshot...\n";
-        LogEntry e4{2, "user:104", "David"};
-        node.append_log(e4); // Raft Index 4
-        node.apply_to_storage(4); // Apply up to Index 4
-
-        std::cout << "\n---> Node 0 crashing / shutting down! <---\n\n";
-    } // Node goes out of scope and is destroyed
-
-    std::cout << " 2. Recovering RaftNode from Disk\n";
-
-    // Recover state into a new RaftNode instance
-    {
-        RaftNode recovered_node(node_id);
-
-        std::cout << "[Check 1] Verifying Snapshot Metadata...\n";
-        std::cout << " -> Recovered lastIncludedIndex: " << recovered_node.get_log().lastIncludedIndex << " (Expected: 2)\n";
-        std::cout << " -> Recovered lastIncludedTerm:  " << recovered_node.get_log().lastIncludedTerm << " (Expected: 1)\n";
-        assert(recovered_node.get_log().lastIncludedIndex == 2);
-        assert(recovered_node.get_log().lastIncludedTerm == 1);
-
-        std::cout << "[Check 2] Verifying Storage state...\n";
-        std::string val1, val2, val3, val4;
-        assert(recovered_node.get_storage().get("user:101", val1) && val1 == "Alice");
-        assert(recovered_node.get_storage().get("user:102", val2) && val2 == "Bob");
-        assert(recovered_node.get_storage().get("user:103", val3) && val3 == "Charlie");
-        assert(recovered_node.get_storage().get("user:104", val4) && val4 == "David");
-        
-        std::cout << " -> user:101 = " << val1 << " [OK]\n";
-        std::cout << " -> user:102 = " << val2 << " [OK]\n";
-        std::cout << " -> user:103 = " << val3 << " [OK]\n";
-        std::cout << " -> user:104 = " << val4 << " [OK]\n";
-
-        std::cout << "[Check 3] Verifying uncompacted Log entries...\n";
-        std::cout << " -> Active memory log count: " << recovered_node.get_log().get_entries().size() << " (Expected: 2 entries: e3 & e4)\n";
-        assert(recovered_node.get_log().get_entries().size() == 2);
+int main(int argc, char* argv[]) {
+    if (argc < 2) {
+        print_usage();
+        return 1;
     }
 
-    std::cout << " SUCCESS: WAL & Snapshot Recovery Test Passed\n";
+    string command = argv[1];
+
+    cout << "====================================================\n";
+    cout << " Starting 3-Node Raft Cluster with Async Elections  \n";
+    cout << "====================================================\n";
+
+    Router router;
+
+    // Spin up 3 nodes as separate threads
+    RaftNode node0(0, {1, 2}, &router);
+    RaftNode node1(1, {0, 2}, &router);
+    RaftNode node2(2, {0, 1}, &router);
+
+    router.register_node(0, &node0);
+    router.register_node(1, &node1);
+    router.register_node(2, &node2);
+
+    // Start background election timer loops
+    node0.start();
+    node1.start();
+    node2.start();
+
+    // Allow background threads time to trigger election and discover leader
+    cout << "[Cluster] Waiting for dynamic election to resolve leader...\n";
+    this_thread::sleep_for(chrono::milliseconds(500));
+
+    // Discover elected Leader dynamically
+    vector<RaftNode*> cluster = {&node0, &node1, &node2};
+    RaftNode* leader = nullptr;
+
+    for (RaftNode* n : cluster) {
+        if (n->get_state() == NodeState::LEADER) {
+            leader = n;
+            break;
+        }
+    }
+
+    if (!leader) {
+        cout << "Error: No leader was elected (Split vote). Try again.\n";
+        return 1;
+    }
+
+    cout << "[Client] Cluster Active. Target Leader is Node " << leader->get_id() << "\n\n";
+
+    if (command == "SET" || command == "PUT") {
+        if (argc < 4) {
+            print_usage();
+            return 1;
+        }
+        string key = argv[2];
+        string val = argv[3];
+
+        bool success = leader->execute_client_set(key, val);
+        if (success) {
+            cout << "OK (" << key << " => " << val << ") [Written via Leader " << leader->get_id() << "]\n";
+        } else {
+            cout << "ERROR: Failed to write command to Leader.\n";
+        }
+
+    } else if (command == "GET") {
+        if (argc < 3) {
+            print_usage();
+            return 1;
+        }
+        string key = argv[2];
+        string value;
+        if (!leader->execute_client_get(key, value)) {
+            cout << "(nil)\n";
+        } else {
+            cout << "\"" << value << "\"\n";
+        }
+    } else {
+        print_usage();
+    }
+
+    // Clean shutdown of worker threads
+    node0.stop();
+    node1.stop();
+    node2.stop();
 
     return 0;
 }

@@ -8,6 +8,7 @@ using namespace std;
 
 struct LogEntry {
     int term;
+    string type;
     string key;
     string value;
 };
@@ -72,6 +73,7 @@ namespace Serializer {
     inline void writeLogEntry(ostream& os, int index, const LogEntry& entry) {
         writeVal(os, index);
         writeVal(os, entry.term);
+        writeString(os, entry.type);
         writeString(os, entry.key);
         writeString(os, entry.value);
     }
@@ -79,6 +81,7 @@ namespace Serializer {
     inline bool readLogEntry(istream& is, int& index, LogEntry& entry) {
         if (!readVal(is, index)) return false;
         if (!readVal(is, entry.term)) return false;
+        if (!readString(is, entry.type)) return false;
         if (!readString(is, entry.key)) return false;
         return readString(is, entry.value);
     }
