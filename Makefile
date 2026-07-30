@@ -5,7 +5,8 @@ SRC = src/main.cpp \
       src/storage.cpp \
       src/log.cpp \
 	  src/wal.cpp \
-	  src/raft.cpp
+	  src/raft.cpp \
+	  src/transport.cpp
 
 TARGET = kvstore
 
