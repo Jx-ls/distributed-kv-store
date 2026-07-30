@@ -109,17 +109,66 @@ void RaftNode::start_election() {
 void RaftNode::send_heartbeats() {
     if (state != NodeState::LEADER) return;
 
-    AppendEntriesRequest heartbeat{
-        .term = currentTerm,
-        .leaderId = id,
-        .prevLogIndex = log.lastIndex(),
-        .prevLogTerm = log.lastTerm(),
-        .entries = {},
-        .leaderCommit = commitIndex,
-    };
-
     for (int peer_id : peers) {
-        transport -> send_append_entries(peer_id, heartbeat);
+        int prev_idx = nextIndex[peer_id] - 1;
+        int prev_term = 0;
+
+        if (prev_idx > 0) {
+            if (prev_idx == log.lastIncludedIndex) {
+                prev_term = log.lastIncludedTerm;
+            } else if (prev_idx > log.lastIncludedIndex) {
+                prev_term = log.at(prev_idx).term;
+            }
+        }
+
+        vector<LogEntry> entries_to_send;
+        for (int i = nextIndex[peer_id]; i <= log.lastIndex(); ++i) {
+            if (i > log.lastIncludedIndex) {
+                entries_to_send.push_back(log.at(i));
+            }
+        }
+
+        AppendEntriesRequest req{
+            .term = currentTerm,
+            .leaderId = id,
+            .prevLogIndex = prev_idx,
+            .prevLogTerm = prev_term,
+            .entries = entries_to_send,
+            .leaderCommit = commitIndex
+        };
+
+        AppendEntriesResponse res = transport->send_append_entries(peer_id, req);
+
+        if (res.term > currentTerm) {
+            currentTerm = res.term;
+            state = NodeState::FOLLOWER;
+            votedFor = -1;
+            return;
+        }
+
+        if (res.success) {
+            matchIndex[peer_id] = res.matchIndex;
+            nextIndex[peer_id] = res.matchIndex + 1;
+        } else if (nextIndex[peer_id] > 1) {
+            nextIndex[peer_id]--; // Step back to resolve log divergence
+        }
+    }
+
+    // Advance commitIndex when entry is replicated on a majority of nodes
+    int quorum = ((peers.size() + 1) / 2) + 1;
+    for (int N = log.lastIndex(); N > commitIndex; --N) {
+        if (N <= log.lastIncludedIndex) break;
+        if (log.at(N).term != currentTerm) continue;
+
+        int count = 1; // Self count
+        for (int peer_id : peers) {
+            if (matchIndex[peer_id] >= N) count++;
+        }
+
+        if (count >= quorum) {
+            commitTo(N);
+            break;
+        }
     }
 }
 
@@ -138,8 +187,7 @@ bool RaftNode::execute_client_set(const std::string& key, const std::string& val
     int index = log.append(entry);
     wal.append(index, entry);
 
-    commitTo(commitIndex);
-    commitIndex = index;
+    send_heartbeats();
 
     // 3. Trigger Snapshot if threshold is reached
     const size_t SNAPSHOT_THRESHOLD = 1000;
@@ -202,12 +250,48 @@ AppendEntriesResponse RaftNode::handle_append_entries(const AppendEntriesRequest
 
     reset_election_timer();
 
+    if (req.prevLogIndex > 0) {
+        if (req.prevLogIndex > log.lastIndex()) {
+            return res;
+        }
+
+        int actual_prev_term = 0;
+        if (req.prevLogIndex == log.lastIncludedIndex) {
+            actual_prev_term = log.lastIncludedTerm;
+        } else if (req.prevLogIndex > log.lastIncludedIndex) {
+            actual_prev_term = log.at(req.prevLogIndex).term;
+        }
+
+        if (actual_prev_term != req.prevLogTerm) {
+            return res;
+        }
+    }
+
+    for (size_t i = 0; i < req.entries.size(); ++i) {
+        int idx = req.prevLogIndex + 1 + i;
+        if (idx <= log.lastIndex()) {
+            if (idx > log.lastIncludedIndex && log.at(idx).term != req.entries[i].term) {
+                log.truncate_from(idx);
+                log.append(req.entries[i]);
+                wal.append(idx, req.entries[i]);
+            }
+        } else {
+            log.append(req.entries[i]);
+            wal.append(idx, req.entries[i]);
+        }
+    }
+
+    if (req.leaderCommit > commitIndex) {
+        commitTo(min(req.leaderCommit, log.lastIndex()));
+    }
+
     res.success = true;
+    res.matchIndex = log.lastIndex();
     return res;
 }
 
 bool RaftNode::commitTo(int toCommit) {
-    if (toCommit >= commitIndex) {
+    if (toCommit <= commitIndex) {
         return false;
     }
     int targetCommit = min(toCommit, log.lastIndex());

@@ -18,6 +18,7 @@ public:
     int lastIndex() const;
     int lastTerm() const;
     void snapshot(int snapshotIndex, int snapshotTerm);
+    void truncate_from(int index);
 
 private:
     vector<LogEntry> entries;

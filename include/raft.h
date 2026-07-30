@@ -60,6 +60,9 @@ private:
     Storage storage;
     Wal wal;
 
+    std::unordered_map<int, int> nextIndex;
+    std::unordered_map<int, int> matchIndex; // each peer's highest replicated entry
+
     mutable mutex node_mutex;
     atomic<bool> running{false};
     thread worker_thread;

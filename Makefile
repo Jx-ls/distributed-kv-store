@@ -8,10 +8,13 @@ SRC = src/main.cpp \
 	  src/raft.cpp \
 	  src/transport.cpp
 
-TARGET = kvstore
+TARGET = bin/kvstore
 
-all:
+all: bin
 	$(CXX) $(CXXFLAGS) $(SRC) -o $(TARGET)
+
+bin:
+	mkdir -p bin
 
 clean:
 	rm -f $(TARGET)
