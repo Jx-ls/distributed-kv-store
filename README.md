@@ -4,13 +4,13 @@
 
 *A fault-tolerant distributed key-value store built in C++ using the Raft consensus algorithm for replication, persistence, and horizontal scalability.*
 
-![](https://img.shields.io/badge/C%2B%2B-20-00599C?style=flat-square\&logo=cplusplus\&logoColor=white)
+![](https://img.shields.io/badge/C%2B%2B-20-00599C?style=flat-square&logo=cplusplus&logoColor=white)
 ![](https://img.shields.io/badge/Consensus-Raft-blue?style=flat-square)
 ![](https://img.shields.io/badge/Storage-Key--Value-success?style=flat-square)
 ![](https://img.shields.io/badge/Replication-Distributed-orange?style=flat-square) <br/>
 ![](https://img.shields.io/badge/Persistence-WAL%20%26%20Snapshots-8A2BE2?style=flat-square)
 ![](https://img.shields.io/badge/Sharding-Consistent%20Hashing-green?style=flat-square)
-![](https://img.shields.io/badge/Platform-Linux-lightgrey?style=flat-square\&logo=linux)
+![](https://img.shields.io/badge/Platform-Linux-lightgrey?style=flat-square&logo=linux)
 [![](https://img.shields.io/github/license/Jx-ls/distributed-kv-store?style=flat-square)](./LICENSE)
 
 </div>
@@ -29,6 +29,7 @@
 * Consistent hash based shard routing across independent Raft clusters
 * Horizontal scalability through shard distribution
 * Thread-safe asynchronous Raft node implementation
+* **Interactive REPL Shell** for long-running cluster interaction
 
 ## Project Structure
 
@@ -36,21 +37,28 @@
 .
 ├── bin
 │   └── kvstore                  # Executable
-├── data
-│   ├── node_0_wal.bin           # WAL for node 0
-│   ├── node_1_wal.bin           # WAL for node 1
-│   └── node_2_wal.bin           # WAL for node 2
+├── data                         # Persistent Storage
+│   ├── cluster-0                # Shard 0 WAL and Snapshots
+│   │   ├── node_0_wal.bin       
+│   │   └── ...
+│   └── cluster-1                # Shard 1 WAL and Snapshots
+│       ├── node_0_wal.bin       
+│       └── ...
 ├── include
+│   ├── consistent_hash.h        # Consistent hashing ring
 │   ├── log.h                    # Replicated log abstraction
 │   ├── message.h                # RPC messages & serialization
 │   ├── raft.h                   # Raft node implementation
+│   ├── shard_router.h           # Multi-cluster router
 │   ├── storage.h                # Key-value storage engine
 │   ├── transport.h              # Transport/RPC layer
 │   └── wal.h                    # Write-ahead log & snapshots
 ├── src
+│   ├── consistent_hash.cpp
 │   ├── log.cpp
-│   ├── main.cpp                 # Cluster bootstrap & CLI
+│   ├── main.cpp                 # REPL Shell & Cluster bootstrap
 │   ├── raft.cpp                 # Core Raft protocol
+│   ├── shard_router.cpp
 │   ├── storage.cpp
 │   ├── transport.cpp            # Message routing
 │   └── wal.cpp                  # Persistence & recovery
@@ -88,51 +96,46 @@ make clean
 
 ## Running
 
-Store a key-value pair:
+The key-value store now runs as a long-running daemon with an interactive REPL shell. This prevents the high overhead of constantly bootstrapping the cluster for single commands.
 
+Start the interactive shell:
 ```bash
-./bin/kvstore SET Joshua 97
+./bin/kvstore
 ```
-
-Retrieve a value:
-
-```bash
-./bin/kvstore GET Joshua
-```
-
-Each execution starts a three-node Raft cluster, automatically elects a leader, and processes the client request through the elected leader.
 
 Example session:
 
 ```text
-$ ./bin/kvstore SET Joshua 97
-
+$ ./bin/kvstore
 ====================================================
- Starting 3-Node Raft Cluster with Async Elections
+ Starting Multi-Cluster Sharded Raft KV Store      
 ====================================================
-[Cluster] Waiting for dynamic election to resolve leader...
-[Client] Cluster Active. Target Leader is Node 1
+[System] Waiting for cluster leader elections to stabilize...
+[System] Cluster ready! Type 'HELP' for commands.
 
-OK (Joshua => 97) [Written via Leader 1]
+kvstore> SET Joshua 97
+OK (Joshua => 97) [Routed to cluster-0 | Leader Node 1]
 
-$ ./bin/kvstore GET Joshua
+kvstore> SET Joseph 42
+OK (Joseph => 42) [Routed to cluster-1 | Leader Node 0]
 
-====================================================
- Starting 3-Node Raft Cluster with Async Elections
-====================================================
-[Cluster] Waiting for dynamic election to resolve leader...
-[Client] Cluster Active. Target Leader is Node 2
+kvstore> GET Joshua
+"97" [Routed to cluster-0 | Node 1]
 
-"97"
+kvstore> GET Joseph
+"42" [Routed to cluster-1 | Node 0]
+
+kvstore> EXIT
+Shutting down cluster...
 ```
 
 ## Architecture
 
 Each shard consists of an independent Raft cluster responsible for maintaining a replicated key-value state machine. Client requests are routed to the appropriate shard using consistent hashing, where the elected leader coordinates replication across follower replicas.
 
-Every write is first appended to the replicated log and persisted through a Write-Ahead Log (WAL). Once a majority of replicas acknowledge the entry, it is committed and applied to the storage engine. Periodic snapshots compact the replicated log, allowing nodes to recover efficiently after crashes without replaying the entire history.
+Every write is first appended to the replicated log and persisted through a Write-Ahead Log (WAL) organized by cluster ID and node ID. Once a majority of replicas acknowledge the entry, it is committed and applied to the storage engine. Periodic snapshots compact the replicated log, allowing nodes to recover efficiently after crashes without replaying the entire history.
 
-Leader election is performed using randomized election timeouts and heartbeat messages. Followers automatically detect leader failures, initiate elections, and continue serving requests after a new leader is chosen, ensuring high availability under node failures.
+Leader election is performed using randomized election timeouts and heartbeat messages. Followers automatically detect leader failures, initiate elections, and continue serving requests after a new leader is chosen, ensuring high availability under node failures. The interactive shell allows users to interface with the active clusters in real-time without needing to restart the servers for every operation.
 
 ## Technologies Used
 
