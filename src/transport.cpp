@@ -22,3 +22,14 @@ AppendEntriesResponse Router::send_append_entries(int target_id, const AppendEnt
     if (target) return target->handle_append_entries(req);
     return AppendEntriesResponse{.term = req.term, .success = false, .matchIndex = 0};
 }
+
+InstallSnapshotResponse Router::send_install_snapshot(int target_id, const InstallSnapshotRequest& req) {
+    RaftNode* target = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(router_mutex);
+        auto it = nodes.find(target_id);
+        if (it != nodes.end()) target = it->second;
+    }
+    if (target) return target->handle_install_snapshot(req);
+    return InstallSnapshotResponse{.term = req.term};
+}

@@ -7,12 +7,14 @@
 
 using namespace std;
 
-Wal::Wal(int id, string dir) {
-    filesystem::create_directories(dir);
+Wal::Wal(const string& clusterId, int id, string dir) {
+    string cluster_dir = dir + "/" + clusterId + "/";
+    filesystem::create_directories(cluster_dir);
 
-    string prefix = dir + "node_" + to_string(id) + "_";
+    string prefix = cluster_dir + "node_" + to_string(id) + "_";
     wal_path = prefix + "wal.bin";
     snap_path = prefix + "snap.bin";
+    state_path = prefix + "state.bin";
 }
 
 void Wal::append(int index, const LogEntry& entry) {
@@ -36,8 +38,21 @@ void Wal::save_snapshot(const SnapshotMeta& meta, Storage& storage) {
     }
 }
 
+void Wal::save_state(int current_term, int voted_for) {
+    ofstream ofs(state_path, ios::binary | ios::trunc);
+    Serializer::writeVal(ofs, current_term);
+    Serializer::writeVal(ofs, voted_for);
+    ofs.flush(); // Ensure it hits disk immediately
+}
+
 RecoveryState Wal::recover() {
     RecoveryState state;
+
+    ifstream state_ifs(state_path, ios::binary);
+    if (state_ifs.is_open()) {
+        Serializer::readVal(state_ifs, state.state.current_term);
+        Serializer::readVal(state_ifs, state.state.voted_for);
+    }
 
     // load snapshot if present
     ifstream snap_ifs(snap_path, ios::binary);

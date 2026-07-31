@@ -19,7 +19,7 @@ enum class NodeState {
 
 class RaftNode {
 public:
-    RaftNode(int id, vector<int> peer_ids, ITransport* transport);
+    RaftNode(const string& clusterId, int id, vector<int> peer_ids, ITransport* transport);
     ~RaftNode();
 
     // async thread lifecycle
@@ -33,6 +33,7 @@ public:
     // RPC Handlers
     RequestVoteResponse handle_request_vote(const RequestVoteRequest& req);
     AppendEntriesResponse handle_append_entries(const AppendEntriesRequest& req);
+    InstallSnapshotResponse handle_install_snapshot(const InstallSnapshotRequest& req);
 
     int get_id() const;
     NodeState get_state() const;
@@ -41,6 +42,7 @@ public:
 
 
 private:
+    const string& clusterId;
     int id;
     vector<int> peers;
     ITransport* transport;
@@ -71,5 +73,5 @@ private:
     void reset_election_timer();
     void start_election();
     void send_heartbeats();
-
+    void persist_state();
 };

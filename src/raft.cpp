@@ -6,12 +6,18 @@
 #include <thread>
 
 
-RaftNode::RaftNode(int id, vector<int> peer_ids, ITransport* transport) : id(id), peers(peer_ids), transport(transport), commitIndex(0), lastApplied(0), wal(id) {
+RaftNode::RaftNode(const string& clusterId, int id, vector<int> peer_ids, ITransport* transport) : clusterId(clusterId), id(id), peers(peer_ids), transport(transport), commitIndex(0), lastApplied(0), wal(clusterId, id) {
     RecoveryState state = wal.recover();
+
+    currentTerm = state.state.current_term;
+    votedFor = state.state.voted_for;
 
     storage = state.storage;
     log.lastIncludedIndex = state.meta.last_included_index;
     log.lastIncludedTerm = state.meta.last_included_term;
+
+    commitIndex = state.meta.last_included_index;
+    lastApplied = state.meta.last_included_index;
 
     // replay uncompacted entries
     for (const auto& entry : state.uncompacted_entries) {
@@ -71,6 +77,7 @@ void RaftNode::start_election() {
     state = NodeState::CANDIDATE;
     currentTerm++;
     votedFor = id;
+    persist_state();
     reset_election_timer();
 
     int votes_granted = 1;
@@ -84,7 +91,9 @@ void RaftNode::start_election() {
     };
 
     for (int peer_id : peers) {
+        node_mutex.unlock();
         RequestVoteResponse res = transport -> send_request_vote(peer_id, req);
+        node_mutex.lock();
 
         if (res.term > currentTerm) {
             currentTerm = res.term;
@@ -100,6 +109,10 @@ void RaftNode::start_election() {
 
     if (votes_granted >= quorum) {
         state = NodeState::LEADER;
+        for (int peer_id : peers) {
+            nextIndex[peer_id] = log.lastIndex() + 1;
+            matchIndex[peer_id] = 0;
+        }
         send_heartbeats();
     } else {
         state = NodeState::FOLLOWER;
@@ -111,6 +124,43 @@ void RaftNode::send_heartbeats() {
 
     for (int peer_id : peers) {
         int prev_idx = nextIndex[peer_id] - 1;
+
+        if (prev_idx < log.lastIncludedIndex) {
+            InstallSnapshotRequest req{
+                .term = currentTerm,
+                .leaderId = id,
+                .lastIncludedIndex = log.lastIncludedIndex,
+                .lastIncludedTerm = log.lastIncludedTerm,
+                .state_data = {}
+            };
+            
+            // Pack current storage state
+            for (const auto& k : storage.get_all_keys()) {
+                string v;
+                storage.get(k, v);
+                req.state_data.push_back({k, v});
+            }
+
+            node_mutex.unlock();
+            InstallSnapshotResponse res = transport->send_install_snapshot(peer_id, req);
+            node_mutex.lock();
+
+            if (state != NodeState::LEADER) return;
+
+            if (res.term > currentTerm) {
+                currentTerm = res.term;
+                state = NodeState::FOLLOWER;
+                votedFor = -1;
+                persist_state();
+                return;
+            }
+
+            // Fast-forward the follower's index tracking
+            nextIndex[peer_id] = log.lastIncludedIndex + 1;
+            matchIndex[peer_id] = log.lastIncludedIndex;
+            continue; // Move to next peer
+        }
+
         int prev_term = 0;
 
         if (prev_idx > 0) {
@@ -136,8 +186,12 @@ void RaftNode::send_heartbeats() {
             .entries = entries_to_send,
             .leaderCommit = commitIndex
         };
-
+        
+        node_mutex.unlock();
         AppendEntriesResponse res = transport->send_append_entries(peer_id, req);
+        node_mutex.lock();
+
+        if (state != NodeState::LEADER) return;
 
         if (res.term > currentTerm) {
             currentTerm = res.term;
@@ -204,6 +258,7 @@ bool RaftNode::execute_client_get(const string& key, string& value) {
 }
 
 RequestVoteResponse RaftNode::handle_request_vote(const RequestVoteRequest& req) {
+    lock_guard<mutex> lock(mutex);
     RequestVoteResponse res{
         .term = currentTerm,
         .voteGranted = false
@@ -216,6 +271,7 @@ RequestVoteResponse RaftNode::handle_request_vote(const RequestVoteRequest& req)
         currentTerm = req.term;
         state = NodeState::FOLLOWER;
         votedFor = -1;
+        persist_state();
     }
 
     bool log_is_up_to_date = false;
@@ -227,6 +283,7 @@ RequestVoteResponse RaftNode::handle_request_vote(const RequestVoteRequest& req)
 
     if ((votedFor == -1 || votedFor == req.candidateId) && log_is_up_to_date) {
         votedFor = req.candidateId;
+        persist_state();
         res.voteGranted = true;
         reset_election_timer();
     }
@@ -234,6 +291,7 @@ RequestVoteResponse RaftNode::handle_request_vote(const RequestVoteRequest& req)
 }
 
 AppendEntriesResponse RaftNode::handle_append_entries(const AppendEntriesRequest& req) {
+    lock_guard<mutex> lock(mutex);
     AppendEntriesResponse res{
         .term = currentTerm,
         .success = false,
@@ -246,6 +304,7 @@ AppendEntriesResponse RaftNode::handle_append_entries(const AppendEntriesRequest
         currentTerm = req.term;
         state = NodeState::FOLLOWER;
         votedFor = -1;
+        persist_state();
     }
 
     reset_election_timer();
@@ -290,6 +349,44 @@ AppendEntriesResponse RaftNode::handle_append_entries(const AppendEntriesRequest
     return res;
 }
 
+InstallSnapshotResponse RaftNode::handle_install_snapshot(const InstallSnapshotRequest& req) {
+    lock_guard<mutex> lock(node_mutex);
+    InstallSnapshotResponse res{.term = currentTerm};
+
+    if (req.term < currentTerm) return res;
+
+    if (req.term > currentTerm) {
+        currentTerm = req.term;
+        votedFor = -1;
+        persist_state();
+    }
+    state = NodeState::FOLLOWER;
+    reset_election_timer();
+
+    // Ignore if we already have a more recent snapshot
+    if (req.lastIncludedIndex <= log.lastIncludedIndex) {
+        return res;
+    }
+
+    // Replace entire local state machine
+    storage.clear();
+    for (const auto& pair : req.state_data) {
+        storage.put(pair.first, pair.second);
+    }
+
+    // Truncate log to reflect snapshot
+    log.snapshot(req.lastIncludedIndex, req.lastIncludedTerm);
+    
+    // Catch up state tracking
+    commitIndex = req.lastIncludedIndex;
+    lastApplied = req.lastIncludedIndex;
+
+    // Persist snapshot to disk immediately
+    wal.save_snapshot({req.lastIncludedIndex, req.lastIncludedTerm}, storage);
+
+    return res;
+}
+
 bool RaftNode::commitTo(int toCommit) {
     if (toCommit <= commitIndex) {
         return false;
@@ -331,4 +428,8 @@ int RaftNode::get_current_term() const {
 int RaftNode::get_voted_for() const {
     lock_guard<mutex> lock(node_mutex);
     return votedFor;
+}
+
+void RaftNode::persist_state() {
+    wal.save_state(currentTerm, votedFor);
 }

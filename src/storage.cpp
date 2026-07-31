@@ -22,3 +22,7 @@ vector<string> Storage::get_all_keys() const {
     }
     return keys;
 }
+
+void Storage::clear() {
+    kv.clear();
+}

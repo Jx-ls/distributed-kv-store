@@ -45,6 +45,18 @@ struct AppendEntriesResponse {
     int matchIndex;
 };
 
+struct InstallSnapshotRequest {
+    int term;
+    int leaderId;
+    int lastIncludedIndex;
+    int lastIncludedTerm;
+    std::vector<std::pair<std::string, std::string>> state_data; 
+};
+
+struct InstallSnapshotResponse {
+    int term;
+};
+
 namespace Serializer {
     template <typename T>
     inline void writeVal(ostream& os, const T& val) {
