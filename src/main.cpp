@@ -3,102 +3,99 @@
 #include <string>
 #include <thread>
 #include <chrono>
-#include "../include/raft.h"
-#include "../include/transport.h"
+#include <sstream>
+#include "../include/shard_router.h"
 
 using namespace std;
 
 void print_usage() {
-    cout << "Usage:\n";
-    cout << "  ./kvstore SET <key> <value>\n";
-    cout << "  ./kvstore GET <key>\n";
+    cout << "Commands:\n";
+    cout << "   SET <key> <value>\n";
+    cout << "   GET <key>\n";
+    cout << "   EXIT (or QUIT)\n";
 }
 
 int main(int argc, char* argv[]) {
-    if (argc < 2) {
-        print_usage();
-        return 1;
-    }
-
-    string command = argv[1];
-
     cout << "====================================================\n";
-    cout << " Starting 3-Node Raft Cluster with Async Elections  \n";
+    cout << " Starting Multi-Cluster Sharded Raft KV Store      \n";
     cout << "====================================================\n";
 
-    Router router;
+    // 1. Instantiate 2 Raft clusters with 3 nodes each
+    auto cluster0 = std::make_shared<RaftCluster>("cluster-0", std::vector<int>{0, 1, 2});
+    auto cluster1 = std::make_shared<RaftCluster>("cluster-1", std::vector<int>{0, 1, 2});
 
-    // Spin up 3 nodes as separate threads
-    RaftNode node0(0, {1, 2}, &router);
-    RaftNode node1(1, {0, 2}, &router);
-    RaftNode node2(2, {0, 1}, &router);
+    // 2. Setup ShardRouter with consistent hashing
+    ShardRouter shard_router(100);
+    shard_router.add_cluster("cluster-0", cluster0);
+    shard_router.add_cluster("cluster-1", cluster1);
 
-    router.register_node(0, &node0);
-    router.register_node(1, &node1);
-    router.register_node(2, &node2);
+    // 3. Start nodes and wait for election resolution across clusters
+    cluster0->start();
+    cluster1->start();
 
-    // Start background election timer loops
-    node0.start();
-    node1.start();
-    node2.start();
-
-    // Allow background threads time to trigger election and discover leader
-    cout << "[Cluster] Waiting for dynamic election to resolve leader...\n";
+    cout << "[System] Waiting for cluster leader elections to stabilize...\n";
     this_thread::sleep_for(chrono::milliseconds(500));
+    cout << "[System] Cluster ready! Type 'HELP' for commands.\n\n";
 
-    // Discover elected Leader dynamically
-    vector<RaftNode*> cluster = {&node0, &node1, &node2};
-    RaftNode* leader = nullptr;
+    // 4. Interactive Shell Loop
+    string line;
+    while (true) {
+        cout << "kvstore> ";
+        if (!getline(cin, line)) break; // Handle EOF (Ctrl+D)
 
-    for (RaftNode* n : cluster) {
-        if (n->get_state() == NodeState::LEADER) {
-            leader = n;
+        if (line.empty()) continue;
+
+        istringstream iss(line);
+        string command;
+        iss >> command;
+
+        // Convert command to uppercase for case-insensitivity
+        for (auto &c : command) c = toupper(c);
+
+        if (command == "EXIT" || command == "QUIT") {
+            cout << "Shutting down cluster...\n";
             break;
-        }
-    }
-
-    if (!leader) {
-        cout << "Error: No leader was elected (Split vote). Try again.\n";
-        return 1;
-    }
-
-    cout << "[Client] Cluster Active. Target Leader is Node " << leader->get_id() << "\n\n";
-
-    if (command == "SET" || command == "PUT") {
-        if (argc < 4) {
+        } else if (command == "HELP") {
             print_usage();
-            return 1;
-        }
-        string key = argv[2];
-        string val = argv[3];
+        } else if (command == "SET" || command == "PUT") {
+            string key, val;
+            if (iss >> key >> val) {
+                string cluster_id;
+                int leader_id = -1;
+                bool ok = shard_router.execute_set(key, val, cluster_id, leader_id);
 
-        bool success = leader->execute_client_set(key, val);
-        if (success) {
-            cout << "OK (" << key << " => " << val << ") [Written via Leader " << leader->get_id() << "]\n";
-        } else {
-            cout << "ERROR: Failed to write command to Leader.\n";
-        }
+                if (ok) {
+                    cout << "OK (" << key << " => " << val << ") [Routed to " << cluster_id << " | Leader Node " << leader_id << "]\n";
+                } else {
+                    cout << "ERROR: Write failed or leader uncontactable on cluster for key: " << key << "\n";
+                }
+            } else {
+                cout << "Usage: SET <key> <value>\n";
+            }
+        } else if (command == "GET") {
+            string key;
+            if (iss >> key) {
+                string val;
+                string cluster_id;
+                int leader_id = -1;
+                bool ok = shard_router.execute_get(key, val, cluster_id, leader_id);
 
-    } else if (command == "GET") {
-        if (argc < 3) {
-            print_usage();
-            return 1;
-        }
-        string key = argv[2];
-        string value;
-        if (!leader->execute_client_get(key, value)) {
-            cout << "(nil)\n";
+                if (!ok) {
+                    cout << "(nil) [Routed to " << cluster_id << "]\n";
+                } else {
+                    cout << "\"" << val << "\" [Routed to " << cluster_id << " | Node " << leader_id << "]\n";
+                }
+            } else {
+                cout << "Usage: GET <key>\n";
+            }
         } else {
-            cout << "\"" << value << "\"\n";
+            cout << "Unknown command: " << command << "\n";
         }
-    } else {
-        print_usage();
     }
 
-    // Clean shutdown of worker threads
-    node0.stop();
-    node1.stop();
-    node2.stop();
+    // 5. Graceful teardown
+    cluster0->stop();
+    cluster1->stop();
 
     return 0;
 }
