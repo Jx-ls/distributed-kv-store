@@ -6,7 +6,9 @@ SRC = src/main.cpp \
       src/log.cpp \
 	  src/wal.cpp \
 	  src/raft.cpp \
-	  src/transport.cpp
+	  src/transport.cpp \
+	  src/consistent_hash.cpp \
+	  src/shard_router.cpp
 
 TARGET = bin/kvstore
 
